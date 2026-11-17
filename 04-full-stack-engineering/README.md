@@ -353,3 +353,556 @@ Tags: #ErrorHandling #CompanyUnverified #AmazonRelevant
 I classify expected validation, authorization, conflict, dependency, and unexpected internal failures. I map them to stable response semantics with a useful error code, safe message, and correlation identifier where appropriate. I preserve detailed diagnostics in approved server-side records rather than leaking stack traces to clients.
 
 I also explain retry behavior and uncertainty. A dependency timeout during a mutation may require status reconciliation instead of telling the user to repeat the action blindly. Central handling improves consistency, but domain errors still need meaningful context so every failure does not collapse into an indistinguishable generic message.
+
+#### 36. How do you prevent CPU-heavy work from blocking a backend?
+
+Tags: #BackendConcurrency #CompanyUnverified #AmazonRelevant
+
+I measure whether the work is CPU-bound, I/O-bound, or waiting on a shared resource. CPU-heavy parsing, transformation, or computation may need worker threads, separate processes, or a background job service. I bound concurrency and memory rather than launching unlimited work outside the request handler.
+
+An async function still blocks while running synchronous computation. For a large export, I might accept a job and return a status identifier instead of holding a request open. I include admission limits, progress, cancellation semantics, and operational ownership so moving work into the background does not merely hide overload.
+
+#### 37. Why use streams and backpressure for large data transfers?
+
+Tags: #Streaming #CompanyUnverified #AmazonRelevant
+
+Streaming processes data incrementally instead of buffering the entire input or output. Backpressure lets a slower destination influence the producer so memory use remains bounded. I use interfaces that propagate errors and cleanup, and I define limits on size, duration, and simultaneous transfers.
+
+For example, a large CSV export should not require materializing every row in application memory. I still consider database cursor behavior, slow clients, and connection lifetime. Once response bytes are sent, a later failure cannot always become a normal JSON error, so partial-output and retry behavior need a clear contract.
+
+#### 38. How do database connection pools affect scalability?
+
+Tags: #ConnectionPooling #CompanyUnverified #AmazonRelevant
+
+A connection pool reuses a bounded number of database connections and controls concurrent access. I set pool size and acquisition timeouts based on workload and database capacity. I release connections reliably and keep transactions short so one request does not monopolize a scarce resource.
+
+Adding application replicas multiplies potential connections, so autoscaling can overwhelm the database if each replica has a large pool. I estimate total concurrency and monitor wait time, active connections, and query duration. Pooling helps manage access; it does not make expensive queries or an overloaded database inherently faster.
+
+#### 39. What does graceful shutdown require?
+
+Tags: #GracefulShutdown #CompanyUnverified #AmazonRelevant
+
+I stop accepting new work, signal unready status as appropriate, and allow in-flight operations to finish within a bounded drain period. I close connections and subscriptions and coordinate background jobs so unfinished work can be resumed or redelivered safely. The process must also tolerate forced termination.
+
+For a worker, I distinguish completing the effect from acknowledging the message. If termination occurs between them, redelivery needs idempotency. I test the deployment platform's actual termination sequence because a shutdown handler alone is insufficient if traffic continues arriving or the platform's deadline is shorter than the assumed drain window.
+
+#### 40. How do you separate configuration from code?
+
+Tags: #Configuration #CompanyUnverified #AmazonRelevant
+
+I make environment-specific values explicit, validate them at startup, and avoid scattered fallback assumptions. I distinguish ordinary configuration from secrets, which use an approved protected mechanism. I record enough versioned deployment context to reproduce behavior without exposing sensitive values.
+
+Frontend configuration is usually observable by users once delivered, so an API secret does not become private because it originated in an environment variable. I also clarify whether a value is substituted at build time or read at runtime. That distinction affects promotion of one artifact across environments and emergency configuration changes.
+
+### APIs and client-server integration (41–50)
+
+#### 41. What makes a good HTTP API contract?
+
+Tags: #APIContracts #CompanyUnverified #AmazonRelevant
+
+I define operations, schemas, validation, authentication, authorization, status behavior, and compatibility expectations. I include pagination, rate limits, concurrency control, and idempotency where the workflow needs them. Clients should be able to determine what happened and what to do next without interpreting an undocumented string.
+
+For example, a long-running import can return a job identifier and expose explicit terminal states. I describe whether partial success is possible and how rejected rows are retrieved. A contract covers failure and uncertainty as well as the successful response used in the first demo.
+
+#### 42. How do you handle fetch responses correctly?
+
+Tags: #FetchAPI #CompanyUnverified #AmazonRelevant
+
+I distinguish network failure, HTTP failure, response-body parsing, and invalid application data. A fulfilled fetch promise can contain a `404` or `500` response, so I inspect status or `response.ok` before treating it as success. I parse the body according to the contract and validate its shape where needed.
+
+I also use appropriate cancellation and avoid expecting a JSON body from a successful `204` response. Errors should retain useful context without leaking secrets. See [MDN's Fetch guidance](https://developer.mozilla.org/en-US/docs/Web/API/Fetch_API/Using_Fetch) for response handling, credentials, and cancellation behavior.
+
+#### 43. What is CORS, and why can a call work outside the browser but fail inside it?
+
+Tags: #CORS #CompanyUnverified #AmazonRelevant
+
+CORS is a browser mechanism that allows a server to specify which cross-origin requests may expose their responses to script. Some requests require an OPTIONS preflight. A command-line client is not subject to the browser's same-origin response-access enforcement, which explains many apparent differences.
+
+I inspect the actual origin, requested headers and methods, credentials, and preflight response. Credentialed access requires an appropriate explicit allowed origin rather than a wildcard response origin. CORS is not authentication, and some cross-origin requests can still reach the server without readable responses. See [MDN's CORS guide](https://developer.mozilla.org/en-US/docs/Web/HTTP/Guides/CORS).
+
+#### 44. How do you implement pagination, filtering, and sorting consistently?
+
+Tags: #CollectionAPIs #CompanyUnverified #AmazonRelevant
+
+I define allowed filters and sorts, validate values, and apply them before pagination in the authoritative query. The ordering needs a stable tie-breaker, and cursor or offset semantics should fit expected mutations and data size. I bound page size and ensure the query matches available indexes.
+
+The interface can encode these inputs in the URL for navigation and sharing. Changing a filter may require resetting the current page or cursor. I do not sort only the currently loaded page while presenting it as a globally sorted result set, and I enforce authorization before returning records or counts.
+
+#### 45. What makes a mutation safe to retry?
+
+Tags: #Idempotency #CompanyUnverified #AmazonRelevant
+
+I identify whether repeating the request could produce another effect. For operations such as creating an order, I can accept a scoped idempotency key and persist a request fingerprint and result atomically with the authoritative change. Matching retries return the recorded outcome, while conflicting payloads are rejected.
+
+I define concurrent-request behavior and retention. External effects may need downstream idempotency or reconciliation because a local database transaction does not cover them automatically. A disabled submit button improves interaction but cannot protect against network retries, multiple tabs, or a client that directly repeats the API call.
+
+#### 46. How do you design a long-running asynchronous operation?
+
+Tags: #AsyncJobs #CompanyUnverified #AmazonRelevant
+
+I durably accept the work, return a job identifier, and expose status with clear progress and terminal states. Workers process bounded tasks, record outcomes, and handle retries safely. The client can poll or subscribe to updates depending on freshness requirements and infrastructure constraints.
+
+I include ownership checks for status and result downloads, expiration, partial failures, and cancellation semantics. “Cancel requested” may differ from “all effects stopped.” If acceptance and enqueueing are separate writes, I use a reliable handoff such as a transactional outbox or an equivalent mechanism so accepted jobs cannot silently disappear.
+
+#### 47. How do you integrate with an unreliable third-party API?
+
+Tags: #ExternalIntegrations #CompanyUnverified #AmazonRelevant
+
+I define timeouts, bounded retries for suitable failures, rate-limit handling, and an explicit unavailable or degraded state. I validate responses, isolate dependency-specific logic behind an adapter, and keep diagnostics that identify the failing operation. I use backoff and jitter rather than synchronized immediate retries.
+
+For writes, a timeout can mean the remote change succeeded but the response was lost. I use provider-supported idempotency or reconcile through a stable external identifier. If the API lacks necessary guarantees, I document the remaining uncertainty and provide an operator workflow instead of claiming perfect automatic recovery.
+
+#### 48. How do you process webhooks reliably?
+
+Tags: #Webhooks #CompanyUnverified #AmazonRelevant
+
+I verify the provider's authenticity mechanism using the required raw body and metadata, validate the event, and durably accept it before acknowledging. I deduplicate by a suitable event identity and process expensive work asynchronously when appropriate. I enforce payload limits and avoid logging secrets or unnecessary sensitive content.
+
+I assume events may repeat, arrive late, or arrive out of order unless the provider guarantees otherwise. State transitions use versions or authoritative lookups where needed. A reconciliation process covers missed events, and replay remains safe. A public endpoint URL alone does not establish that the sender is trusted.
+
+#### 49. How do you keep frontend and backend contracts aligned?
+
+Tags: #ContractEvolution #CompanyUnverified #AmazonRelevant
+
+I maintain a shared contract or generated client when it reduces duplication and validate compatibility through appropriate checks. I distinguish public transport schemas from internal persistence models so a database change does not unintentionally expose fields. Both sides still validate their trust boundaries.
+
+I prefer compatible staged changes because frontend and backend versions may coexist during deployment or browser caching. For example, making a new field mandatory immediately can break older clients. I measure usage before retiring old behavior and define a migration path rather than relying on a coordinated release occurring perfectly everywhere.
+
+#### 50. How do you choose polling, server-sent events, or WebSockets?
+
+Tags: #RealtimeUpdates #CompanyUnverified #AmazonRelevant
+
+I choose based on required freshness, direction of communication, update frequency, and operating constraints. Polling is straightforward for occasional updates. Server-sent events fit server-to-client streaming, while WebSockets support sustained bidirectional interactions. I verify proxy support, connection limits, and authentication behavior in the actual environment.
+
+All approaches need reconnect and missed-update semantics where data matters. A resume cursor or subsequent authoritative fetch can restore state after disconnection. I distinguish ephemeral signals from durable records and avoid treating an open socket as proof of message delivery or current authorization.
+
+### Databases and data correctness (51–60)
+
+#### 51. How do you choose a relational database versus a document or key-value store?
+
+Tags: #DatabaseChoice #CompanyUnverified #AmazonRelevant
+
+I compare access patterns, relationships, invariants, query flexibility, growth, and operating constraints. A relational database often fits transactions and related entities well. Document or key-value models may fit particular access patterns, but their exact transaction, indexing, and consistency capabilities depend on the chosen system.
+
+I avoid treating “SQL versus NoSQL” as a universal scale comparison. A customer workflow with modest volume and complex updates may benefit most from a familiar relational design. I include backups, migration, tooling, and the receiving team's skills in the decision, not only peak throughput claims.
+
+#### 52. How do you model a business workflow in a database?
+
+Tags: #DataModeling #CompanyUnverified #AmazonRelevant
+
+I identify entities, stable identifiers, relationships, lifecycle states, and invariants before designing tables or documents. I distinguish authoritative facts from derived summaries and define ownership, timestamps, and deletion behavior. I test the model against realistic transitions and failure cases.
+
+For an approval process, I might separate the request, approval attempts, and audit events rather than repeatedly overwriting one text field. The model should explain who changed what and which transitions are valid. I also consider tenant-scoped keys and constraints so correctness does not depend on every application path remembering the same informal rule.
+
+#### 53. When do you normalize or denormalize data?
+
+Tags: #Normalization #CompanyUnverified #AmazonRelevant
+
+Normalization reduces duplicated facts and can simplify consistent updates. Denormalization stores repeated or precomputed data to support a particular read pattern. I start from the domain and actual queries, then make duplication deliberate with a defined update and repair policy.
+
+For example, an order may preserve the shipping address used at purchase even after the customer's profile changes. That is a historical business fact, not simply an accidental duplicate. A cached customer display name has different freshness requirements. I distinguish these meanings before deciding which source should update which copy.
+
+#### 54. How do you decide which indexes to create?
+
+Tags: #DatabaseIndexes #CompanyUnverified #AmazonRelevant
+
+I inspect important filters, joins, ordering, cardinality, and query plans using representative data. I choose indexes that support those patterns and evaluate their effect on read latency, write cost, and storage. Composite key order matters, and a large number of indexes can make writes and maintenance expensive.
+
+For a tenant-scoped recent-record list, an index aligned with tenant and ordering may help. I verify the actual plan and avoid assuming the database will always select an available index. I also check whether unnecessary columns, broad scans, or poor pagination are the real problem.
+
+#### 55. What is an N+1 query problem?
+
+Tags: #QueryEfficiency #CompanyUnverified #AmazonRelevant
+
+An N+1 pattern performs one query for a collection and then an additional query for each item or related entity. It can create excessive round trips and load even when individual queries are fast. I detect it through traces, query logs, or request-level query counts.
+
+I may use a join, explicit eager loading, or batching depending on the relationship and response shape. Joining every relationship can create a huge multiplied result, so I measure both round trips and returned data. I also ensure batching preserves tenant and resource authorization rather than fetching broadly and hoping the interface filters correctly.
+
+#### 56. What do transactions guarantee, and what still needs design?
+
+Tags: #Transactions #CompanyUnverified #AmazonRelevant
+
+A transaction groups database operations according to the database's atomicity, durability, and isolation guarantees. I choose a boundary around the business invariant and verify the isolation behavior required for concurrent operations. Merely placing two statements in a transaction does not make every read-modify-write sequence safe.
+
+I keep transactions appropriately short and handle conflicts or serialization failures. External effects such as an email are not automatically rolled back with database state, so they need a reliable handoff or reconciliation. See [PostgreSQL's transaction-isolation documentation](https://www.postgresql.org/docs/current/transaction-iso.html) for the distinction between supported isolation levels and concurrent anomalies.
+
+#### 57. How do you prevent lost updates from two editors?
+
+Tags: #OptimisticConcurrency #CompanyUnverified #AmazonRelevant
+
+I can include a version in the record and require that an update match the version the editor originally read. The authoritative update checks and increments the version atomically. If no record matches, the API reports a conflict instead of silently overwriting someone else's work.
+
+The interface can offer a refresh, comparison, or domain-appropriate merge. Blindly retrying with the new version may defeat the protection by applying an old edit to new state. Some workflows need locking or more specific merge rules, so I choose the policy based on what the data means.
+
+#### 58. How do you migrate a schema while old and new application versions coexist?
+
+Tags: #DatabaseMigrations #CompanyUnverified #AmazonRelevant
+
+I use compatible stages: add the new representation, deploy code that can tolerate the transition, backfill carefully, switch authoritative usage, and remove obsolete fields after validation. I assess locking, data volume, transaction size, and the deployment platform's rollout behavior.
+
+Renaming or dropping a required column immediately can break still-running instances or background jobs. I verify both versions during the transition and reconcile migrated values. Recovery planning includes data effects because reverting the application does not automatically reverse a completed transformation or restore deleted information.
+
+#### 59. When should a full-stack application cache database results?
+
+Tags: #ApplicationCaching #CompanyUnverified #AmazonRelevant
+
+I cache when repeated expensive reads have sufficient reuse and the workflow permits a clear freshness policy. I define the key, tenant and user context, lifetime, invalidation, capacity, and miss behavior. I first verify whether query optimization or reducing unnecessary requests would solve the problem more simply.
+
+A cache must not become an accidental authority for a critical write decision. I plan for cold starts, simultaneous refreshes, and complete cache loss so the backend remains protected. If permissions change, stale cached data needs an appropriate enforcement strategy rather than a promise that expiration will eventually fix access.
+
+#### 60. How do you validate data imported from customer spreadsheets or files?
+
+Tags: #DataImports #CompanyUnverified #AmazonRelevant
+
+I define the expected schema and business meaning, then validate formats, required values, identifiers, duplicates, and references. I preserve provenance and produce actionable row-level errors using approved data-handling practices. I distinguish a completely rejected file from a partially accepted import with explicit semantics.
+
+I provide a preview or dry run where helpful and use stable identities or idempotency to avoid duplicate effects on retries. Silent correction can change business meaning, so normalization rules need agreement. Reconciliation checks counts and important values after import rather than treating successful parsing as proof of correct data.
+
+### Authentication and application security (61–70)
+
+#### 61. What is the difference between authentication and authorization?
+
+Tags: #AccessControl #CompanyUnverified #AmazonRelevant
+
+Authentication identifies the caller. Authorization checks whether that caller may perform a specific action on a specific resource in the current context. I enforce authorization on the server for every relevant path, including exports, downloads, background jobs, and administrative operations.
+
+For example, knowing a record identifier or hiding a button does not determine permission to edit the record. I check ownership, tenant, role, and other applicable policy using trusted context. I test denial paths as deliberately as success paths so a valid session cannot access another customer's information by modifying a request.
+
+#### 62. How do server-side sessions and JWT-based access tokens differ?
+
+Tags: #SessionsAndTokens #CompanyUnverified #AmazonRelevant
+
+A server-side session commonly uses an opaque identifier whose associated state is stored on the server. A signed JWT can carry claims that a receiver verifies under a defined token-validation policy. These are representation and validation choices; either may be delivered through a cookie or another suitable mechanism.
+
+I compare revocation, expiry, audience, storage exposure, and operational complexity. Signed does not mean encrypted, and a token's claims may become stale as permissions change. JWTs do not automatically eliminate server state or make an application more secure. I choose a complete session lifecycle rather than choosing only a format.
+
+#### 63. What does secure session management require?
+
+Tags: #SessionSecurity #CompanyUnverified #AmazonRelevant
+
+I use unpredictable session identifiers, protected transport, appropriate cookie attributes where cookies are used, and clear idle and absolute expiration policies. I rotate session identifiers when appropriate, support server-side invalidation, and avoid exposing credentials in URLs or logs. I consider account changes and concurrent sessions.
+
+`HttpOnly` limits script access to a cookie, while `Secure` restricts its transmission to secure contexts under browser rules; neither is a complete defense against malicious script actions or CSRF. I validate the whole lifecycle, including login, logout, renewal, and revocation. See the [OWASP session-management guidance](https://cheatsheetseries.owasp.org/cheatsheets/Session_Management_Cheat_Sheet.html).
+
+#### 64. What is CSRF, and how do you defend against it?
+
+Tags: #CSRF #CompanyUnverified #AmazonRelevant
+
+Cross-site request forgery abuses credentials that a browser attaches automatically to induce an unwanted state-changing request. For cookie-authenticated operations, I use appropriate CSRF tokens or a suitable equivalent pattern, origin checks where applicable, and carefully configured cookie policy. I do not make state changes through ordinary safe navigation endpoints.
+
+SameSite cookies help in many situations but need to match the application's cross-site flows and threat model. CORS alone is not a general CSRF defense because some requests can be sent even when their responses are unreadable. Server-side authorization and input validation remain necessary alongside CSRF protection. See [OWASP's CSRF prevention guidance](https://cheatsheetseries.owasp.org/cheatsheets/Cross-Site_Request_Forgery_Prevention_Cheat_Sheet.html).
+
+#### 65. What is XSS, and how do you prevent it?
+
+Tags: #XSS #CompanyUnverified #AmazonRelevant
+
+Cross-site scripting occurs when untrusted content executes as script in a trusted page context. I use context-appropriate output handling, avoid unsafe DOM or template insertion, and sanitize approved rich HTML with a maintained approach when HTML must be supported. A restrictive content policy can add defense in depth.
+
+Framework escaping helps common text rendering but does not make arbitrary HTML, URLs, or third-party scripts safe. I inspect every trust boundary and avoid trusting stored content merely because it came from our database. I also limit the credentials and sensitive data available to compromised client code.
+
+#### 66. How do you prevent SQL injection and unsafe mass assignment?
+
+Tags: #InjectionPrevention #CompanyUnverified #AmazonRelevant
+
+I use parameterized database operations for values and explicitly allowlist dynamic structures such as sort fields or identifiers. I do not concatenate untrusted input into query text. For updates, I map approved input fields to the operation rather than passing the entire request body into an object or persistence API.
+
+These address different problems: parameterization protects query interpretation, while field allowlisting prevents users from setting properties such as owner or privilege level. An ORM does not guarantee every custom query or update is safe. I also apply authorization and database constraints so valid syntax cannot perform an unauthorized change.
+
+#### 67. How do you implement tenant isolation across the stack?
+
+Tags: #TenantIsolation #CompanyUnverified #AmazonRelevant
+
+I derive tenant context from validated identity and authorized membership, then propagate it through queries, caches, files, jobs, and integration calls. Data-access boundaries enforce tenant scoping consistently, with additional database protections where appropriate. I do not trust an arbitrary client-supplied tenant ID as authority.
+
+I test cross-tenant reads, writes, exports, searches, and background results, including guessed identifiers and cache-key collisions. Operational tooling needs equivalent care because administrators can bypass normal application paths. Isolation is an end-to-end property; a filtered table in the browser does not establish it.
+
+#### 68. How do you handle secrets and credentials in a full-stack project?
+
+Tags: #SecretsManagement #CompanyUnverified #AmazonRelevant
+
+I keep service credentials in an approved server-side secret mechanism, scope access, and plan rotation and revocation. I avoid committing them, embedding them in frontend bundles, or exposing them in logs and error responses. Public configuration and secret configuration have different handling requirements.
+
+If a browser needs access to an external operation, I use an authorized backend path or a narrowly scoped, short-lived capability when the service supports it. I include expiration and permitted actions in that design. Moving a secret into a frontend environment variable does not keep it hidden from the application user.
+
+#### 69. What makes a file-upload feature secure?
+
+Tags: #UploadSecurity #CompanyUnverified #AmazonRelevant
+
+I authorize the upload, bound size and resource usage, and validate supported content independently of the filename or client-declared type. I store objects with controlled names and access and isolate untrusted parsing or scanning. Files remain unavailable to ordinary consumers until required checks complete.
+
+I also secure result downloads and clean up abandoned uploads. A signed upload URL needs limited scope and lifetime, and accepting an object does not prove its contents are safe. I consider archive expansion, parser failures, and indirect processing costs so a small request cannot trigger unlimited computation or storage.
+
+#### 70. How do you handle sensitive customer data during development and debugging?
+
+Tags: #DataHandling #CompanyUnverified #AmazonRelevant
+
+I use approved environments and minimize copying, collection, and retention. Synthetic or appropriately de-identified examples can support development when representative enough. I confirm permitted use with responsible owners and protect logs, screenshots, traces, test fixtures, and third-party diagnostic tools from unnecessary exposure.
+
+When debugging requires real examples, I use the narrowest approved access and record only what is needed. I include cleanup and access revocation in the workflow. Technical ability to retrieve a record does not establish permission to move it into another environment or send it to an external service.
+
+### Testing, debugging, and performance (71–80)
+
+#### 71. How do you choose unit, integration, and end-to-end tests?
+
+Tags: #TestingStrategy #CompanyUnverified #AmazonRelevant
+
+I choose the lowest-cost layer that can credibly verify the important behavior. Unit tests suit isolated rules and transformations. Integration tests verify boundaries such as database queries, authorization, or dependency adapters. A smaller set of end-to-end tests exercises critical user journeys through the assembled system.
+
+I prioritize impact and failure likelihood rather than pursuing a fixed test count. For an approval flow, useful coverage includes allowed and denied transitions, concurrent updates, and one browser journey. Testing a mock's behavior repeatedly is weak evidence if the production boundary it replaces remains unverified.
+
+#### 72. What makes a useful frontend component test?
+
+Tags: #ComponentTesting #CompanyUnverified #AmazonRelevant
+
+I render the component in a representative context, interact through user-observable controls, and assert meaningful behavior. I prefer queries based on roles, labels, or visible text when they fit the interface. I cover important states such as pending submission, validation feedback, and recovery from an API error.
+
+I avoid assertions tied only to private state or incidental implementation details. A test that survives an internal refactor while detecting a broken user action provides better evidence. The [Testing Library guiding principles](https://testing-library.com/docs/guiding-principles/) explain this emphasis on testing components in ways that resemble their use.
+
+#### 73. How do you make browser tests reliable?
+
+Tags: #BrowserTesting #CompanyUnverified #AmazonRelevant
+
+I isolate test data and browser state, control dependencies as appropriate, and wait for observable conditions instead of fixed sleeps. I use stable, meaningful locators and assertions that account for asynchronous behavior. Failure artifacts such as traces and screenshots help distinguish application defects from setup problems.
+
+I keep a few critical journeys using real integrations where practical while using controlled responses for targeted failure cases. Retries can expose intermittent behavior but should not conceal a recurring defect. See [Playwright's best practices](https://playwright.dev/docs/best-practices) for isolation, resilient locators, and user-visible verification.
+
+#### 74. When should you mock a dependency?
+
+Tags: #TestDoubles #CompanyUnverified #AmazonRelevant
+
+I mock a dependency when controlling it makes a focused test faster, deterministic, or able to exercise an otherwise difficult failure. I preserve the relevant contract and separately verify important real boundaries. A mock should not be the only evidence that authentication, persistence, or a customer integration works.
+
+For example, a component test can simulate a timeout while an integration test verifies the real client's response handling. I avoid duplicating the implementation inside the mock, which can make both share the same mistake. I also review fixtures when contracts change so stale examples do not create false confidence.
+
+#### 75. How would you debug a bug that crosses frontend and backend boundaries?
+
+Tags: #EndToEndDebugging #CompanyUnverified #AmazonRelevant
+
+I reproduce a specific user action and collect the request inputs, browser behavior, response, and correlation identifier. I trace the operation through API logs, business logic, database activity, and dependencies. I compare expected and actual behavior at each boundary to narrow the first point of divergence.
+
+For example, a blank table might result from an incorrect filter, denied access, an unexpected response schema, or a rendering error. I avoid changing several layers at once. After fixing the cause, I add or run a focused check at the boundary that would have exposed it.
+
+#### 76. How do you measure frontend performance?
+
+Tags: #WebPerformance #CompanyUnverified #AmazonRelevant
+
+I measure real user tasks and inspect network, main-thread, rendering, and interaction behavior under representative conditions. Current Core Web Vitals include Largest Contentful Paint for loading, Interaction to Next Paint for responsiveness, and Cumulative Layout Shift for visual stability. These complement workflow-specific measures rather than replacing them.
+
+I distinguish controlled laboratory measurements from field data across actual devices and networks. A fast initial page can still have a slow search or save action. I identify the bottleneck before optimizing and verify improvement in the affected experience. See [Google's Web Vitals overview](https://web.dev/articles/vitals).
+
+#### 77. How do you optimize a table with thousands of rows?
+
+Tags: #LargeLists #CompanyUnverified #AmazonRelevant
+
+I first ask whether users need all rows at once and whether server-side filtering or pagination better fits the task. Virtualization can reduce rendered elements for large interactive lists, but it introduces focus, measurement, accessibility, and scrolling considerations. I avoid fetching unnecessary fields or repeating expensive cell calculations.
+
+I profile rendering separately from data loading and query time. A virtualized table does not fix a slow unindexed query or an oversized download. I verify sorting and selection across pages or windows, stable row identities, and the behavior of screen readers and keyboard navigation for the chosen component.
+
+#### 78. How do you diagnose a backend performance bottleneck?
+
+Tags: #BackendPerformance #CompanyUnverified #AmazonRelevant
+
+I define the workload and expected service behavior, then inspect request traces, latency distributions, errors, CPU, memory, connection waits, and dependency timings. I examine query plans and request amplification where database work dominates. I compare affected and unaffected requests and recent changes.
+
+If a shared database is saturated, adding application replicas may increase pressure. If a handler blocks the event loop, a query index will not address it. I select an intervention based on evidence, then retest comparable load and failure conditions while watching correctness, tail latency, and resource consumption.
+
+#### 79. How do you use HTTP caching safely?
+
+Tags: #HTTPCaching #CompanyUnverified #AmazonRelevant
+
+I classify responses by freshness and sharing requirements, then set an explicit cache policy. Versioned public assets can often use long-lived caching, while personalized responses need carefully controlled handling. Validators such as ETags can support revalidation when appropriate.
+
+I distinguish `no-cache`, which permits storage with required revalidation, from `no-store`, which instructs caches not to store the response. I verify variation and shared-cache boundaries so one user's content cannot be served to another. Cache behavior also affects rollout and revocation. See [MDN's HTTP caching guide](https://developer.mozilla.org/en-US/docs/Web/HTTP/Guides/Caching).
+
+#### 80. What causes memory leaks in full-stack applications?
+
+Tags: #MemoryDiagnostics #CompanyUnverified #AmazonRelevant
+
+Long-lived references can retain objects that are no longer needed. Common causes include unremoved listeners, timers, subscriptions, unbounded caches, pending work, or retained request context. I reproduce sustained activity and inspect memory trends and appropriate heap diagnostics rather than labeling every temporary allocation a leak.
+
+In the browser, an unmounted view may remain referenced by a listener; on the server, an ever-growing map may retain every user or job. I define lifecycle cleanup and size bounds, then verify behavior over repeated operations. Garbage collection cannot free reachable objects merely because the application no longer intends to use them.
+
+### Delivery, deployment, and operations (81–90)
+
+#### 81. How do you structure a full-stack repository?
+
+Tags: #RepositoryStructure #CompanyUnverified #AmazonRelevant
+
+I organize code around clear application and domain boundaries, with explicit ownership of client, server, contracts, and shared utilities. A monorepo can simplify coordinated changes, while separate repositories may fit independent teams and release cycles. I choose based on workflow rather than assuming either structure guarantees modularity.
+
+I keep browser-safe code separate from server-only dependencies and credentials. Shared packages should have intentional interfaces rather than exposing all internal models. I also provide straightforward setup, validation, and build commands so another engineer can reproduce a working slice without undocumented local steps.
+
+#### 82. What should a full-stack CI pipeline verify?
+
+Tags: #ContinuousIntegration #CompanyUnverified #AmazonRelevant
+
+I run appropriate static checks, type checking, tests for important behavior, and production builds. I include contract or migration checks where the change can break a boundary. The pipeline should provide actionable failures and use reproducible dependencies and configuration.
+
+I distinguish fast checks for every change from expensive validation triggered by risk or release scope. A passing frontend build does not prove the backend contract remains compatible. I protect secrets and test data in CI and ensure generated artifacts correspond to the version actually reviewed and promoted.
+
+#### 83. What does a container provide, and what does it not solve?
+
+Tags: #Containers #CompanyUnverified #AmazonRelevant
+
+A container packages an application and its user-space dependencies into a reproducible execution unit with configured isolation and resource behavior. It can reduce environment drift, but it does not automatically provide secure configuration, persistent data, high availability, or correct networking.
+
+I define the startup command, runtime user, resource limits, configuration, health behavior, and shutdown sequence. I keep secrets out of image layers and plan image updates. A container that starts locally can still fail in production because identity, network access, permissions, or storage assumptions differ in the customer's environment.
+
+#### 84. How do readiness, liveness, and startup checks differ?
+
+Tags: #HealthChecks #CompanyUnverified #AmazonRelevant
+
+A readiness check indicates whether an instance should receive work. A liveness check helps identify a process that should be restarted. A startup check can give initialization its own allowance before other checks apply, depending on the platform. I choose behavior based on failure modes rather than reusing one expensive endpoint for every purpose.
+
+A temporary dependency outage should not necessarily trigger a fleet-wide restart loop. Conversely, returning healthy because the process exists may route traffic to an unusable instance. I test startup, draining, and dependency failures and document what each signal means to the deployment system.
+
+#### 85. How do you deploy frontend and backend changes without downtime?
+
+Tags: #CompatibleDeployment #CompanyUnverified #AmazonRelevant
+
+I make the contract and schema compatible across the versions that can coexist. I deploy additive server behavior before depending on it from the client, then remove obsolete paths only after usage evidence supports it. I use staged rollout and clear health or business stop conditions.
+
+Old browser tabs, cached assets, and background workers may outlive a server release. I test those transitions and maintain a recovery plan for application and data changes. “Deploy both together” is not a complete compatibility strategy when distributed clients cannot all update at the same instant.
+
+#### 86. What should you observe after launch?
+
+Tags: #ProductionObservability #CompanyUnverified #AmazonRelevant
+
+I monitor successful user tasks, errors, latency, request volume, resource saturation, and dependency health. For asynchronous workflows, I include job age, failures, and completion outcomes. Correlation identifiers and appropriate logs or traces connect a user's report to the relevant operations.
+
+Alerts need an owner and a useful response procedure. I avoid collecting excessive sensitive content or unbounded high-cardinality labels. A low API error rate can coexist with incorrect data or abandoned workflows, so operational health includes business-level checks rather than only process uptime and successful HTTP responses.
+
+#### 87. How do feature flags help, and what risks do they introduce?
+
+Tags: #FeatureFlags #CompanyUnverified #AmazonRelevant
+
+Flags can separate code deployment from activation and support gradual rollout or a bounded pilot. I define ownership, targeting, defaults, and how behavior changes when the flag service is unavailable. I ensure the activation boundary includes any necessary backend enforcement.
+
+Flags add configuration states and can become permanent complexity if never removed. I test important combinations and track cleanup after the rollout. Hiding a feature through a client flag does not restrict the underlying API, and disabling a flag cannot automatically reverse data changes or external effects already produced.
+
+#### 88. How do you handle a production incident involving a recent release?
+
+Tags: #IncidentResponse #CompanyUnverified #AmazonRelevant
+
+I assess impact, coordinate ownership, and prioritize safe mitigation while preserving useful evidence. A rollback, feature disablement, or capacity action may restore service faster than root-cause analysis. I communicate verified facts, uncertainty, and the next update time through the agreed process.
+
+I check whether rollback is safe for the current data and mixed-version state. After stabilization, I investigate the cause and implement proportionate prevention or detection improvements. I verify customer workflow recovery rather than stopping when a dashboard turns green, especially if failed jobs or uncertain side effects need reconciliation.
+
+#### 89. How do you deliver into a restricted enterprise environment?
+
+Tags: #EnterpriseDeployment #CompanyUnverified #AmazonRelevant
+
+I verify approved identity, network routes, proxies, certificates, deployment tools, data access, and external dependencies early. I test a thin end-to-end slice from the actual target environment. I include artifact delivery, updates, monitoring, and support access in the plan.
+
+If an external service is not permitted, I adjust the architecture or scope with the customer. I do not assume bypassing a control is part of implementation. A successful local demo proves little about production connectivity, so the pilot should expose important environment constraints before the team invests heavily in unsupported assumptions.
+
+#### 90. What belongs in a full-stack operational handoff?
+
+Tags: #OperationalHandoff #CompanyUnverified #AmazonRelevant
+
+I provide architecture context, setup and deployment procedures, configuration ownership, monitoring, runbooks, and recovery steps. I identify support contacts, known limitations, data flows, and responsibility for credentials and dependency changes. I confirm who owns the service after the initial delivery team leaves.
+
+I walk the receiving team through a routine update and a representative failure. This tests whether documentation and access are sufficient in practice. Handoff also includes user onboarding and feedback paths, because operating the infrastructure does not guarantee the customer can complete the business workflow or adopt the application.
+
+### Practical full-stack and FDE scenarios (91–100)
+
+These answers are proposed approaches, not claims of completed projects. Clarify assumptions and choose a scope appropriate to the interview before implementing or drawing the design.
+
+#### 91. How would you load a detail table from an API when a user selects a row?
+
+Tags: #MasterDetailUI #AVBMarketing #CandidateReportedAdapted
+
+**Attribution:** Adapted from the table-to-detail interaction in the June 30, 2021 AVB Marketing React TypeScript Full Stack Developer entry on [Glassdoor's question listing](https://www.glassdoor.com/Interview/typescript-full-stack-developer-interview-questions-SRCH_KO0%2C31.htm). The entry also discusses sessions and a dialog; this question attributes only the relevant interaction. The report is not independently verified.
+
+I give rows stable identifiers and expose an accessible selection control or appropriate table interaction. Selection updates the active identifier and triggers an authorized detail request. The detail area represents loading, error, empty, and success states and clearly identifies which record it describes.
+
+I cancel or ignore outdated requests so a slow earlier selection cannot replace the current result. The backend verifies access to the requested record regardless of what the master table showed. I define caching and refresh behavior and test rapid selection, denied access, and deletion between selection and retrieval. If the design uses a dialog, focus entry, keyboard interaction, and focus restoration also need deliberate handling.
+
+#### 92. Build a searchable, paginated customer table. What do you implement first?
+
+Tags: #SearchableTable #CompanyUnverified #AmazonRelevant
+
+I clarify searchable fields, sort order, expected volume, permissions, and the definition of a useful result. I build a complete path from accessible controls to a validated API query and indexed database access. The response includes stable record identities and the agreed pagination information.
+
+I preserve query state in the URL where useful, reset pagination when filters change, and protect against stale responses. I debounce input only if it improves the interaction and respect cancellation and quotas. I test empty results, invalid filters, authorization, rapid searches, and navigating backward. Server-side filtering ensures a search does not silently examine only the page currently loaded in the browser.
+
+#### 93. Design an asynchronous CSV import with row-level errors.
+
+Tags: #ImportWorkflow #CompanyUnverified #AmazonRelevant
+
+I create an authorized upload session, validate file constraints, and durably register an import job. A worker parses records with bounded memory, validates the agreed schema and business rules, and records progress and errors. I define whether acceptance is atomic for the whole file or supports explicit partial success.
+
+The interface shows job status and an authorized error report that lets users correct rejected rows. Stable job and record identities prevent retrying the import from duplicating valid changes. I reconcile counts and important values, isolate untrusted processing, and clean up files under the approved retention policy. A preview can catch mapping mistakes before effects are committed.
+
+#### 94. Design an approval workflow with multiple reviewers.
+
+Tags: #ApprovalWorkflow #CompanyUnverified #AmazonRelevant
+
+I clarify whether reviews are sequential or parallel, how many approvals are required, who may act, and which changes invalidate earlier decisions. I model requests, reviewer decisions, versions, and allowed transitions. The backend enforces these rules in the authoritative state change rather than relying on disabled interface controls.
+
+I use concurrency protection so simultaneous decisions cannot create an invalid final state. Notifications follow a reliable handoff and are safe under retries. The interface explains pending reviewers, conflicts, and rejected transitions. I include an audit trail, delegation or expiry rules where required, and tests for changed permissions, repeated submissions, and edits after approval has started.
+
+#### 95. How would you build a chat interface with streamed AI responses?
+
+Tags: #StreamingChat #CompanyUnverified #AmazonRelevant
+
+I clarify history, identity, data permissions, cancellation, and what users expect during partial output. The backend authorizes the conversation, controls model or tool access, and streams events with a defined format. The client distinguishes pending, streaming, completed, stopped, and failed responses and renders content safely.
+
+I decide what is durably stored and how reconnection or retry avoids duplicating messages and side effects. Stopping the display does not prove every remote operation stopped. I bound context, execution, and cost, handle backpressure, and protect credentials server-side. Evaluation includes answer quality and unauthorized tool behavior as well as smooth rendering and time to first useful output.
+
+#### 96. How do you prevent duplicate orders when a customer clicks Submit twice?
+
+Tags: #DuplicateSubmission #CompanyUnverified #AmazonRelevant
+
+I improve the interface with clear pending status and appropriate submission controls, but enforce uniqueness at the authoritative backend boundary. The client associates a stable idempotency key with the intended operation and reuses it for retries. The server atomically records the resulting order and matching operation identity, with request-payload checks.
+
+I handle simultaneous requests and a lost response after successful creation. If payment is external, its idempotency and reconciliation must align with the order workflow. I test double clicks, separate tabs, replayed requests, and crashes around persistence. A browser-only debounce cannot guarantee one order because callers and networks can repeat the request independently.
+
+#### 97. The customer says a screen is slow, but the API is fast. What do you investigate?
+
+Tags: #CrossLayerPerformance #CompanyUnverified #AmazonRelevant
+
+I reproduce the actual user task on a representative device and network and align the measurement boundaries. The API metric may exclude connection setup, multiple sequential calls, large downloads, parsing, rendering, or waiting for another interaction. I inspect a browser trace and network waterfall and connect requests to backend evidence.
+
+If the screen fetches unnecessary data or renders thousands of complex rows, I address that bottleneck rather than tuning an already-fast handler. I also check caching and environment-specific proxies. I verify the same task after the change using user-visible completion and responsiveness, not just one component's isolated timing.
+
+#### 98. How would you build a field application for unreliable connectivity?
+
+Tags: #OfflineWorkflow #CompanyUnverified #AmazonRelevant
+
+I identify which reads and actions may work offline and which require current server authority. I store only approved local data, queue permitted operations durably with stable identifiers, and display sync state clearly. Reconnection uses authenticated synchronization, idempotency, and a defined conflict policy.
+
+Offline draft capture may be safe, while reserving a scarce resource may need an online decision. I include local security, data cleanup, device loss, stale permissions, and storage limits. I test disconnection during each transition and ensure users can distinguish saved locally from accepted by the server. Offline support should name its guarantees rather than imply the full online workflow remains unchanged.
+
+#### 99. You have one week to deliver a full-stack customer pilot. How do you scope it?
+
+Tags: #PilotDelivery #CompanyUnverified #AmazonRelevant
+
+I agree on one valuable workflow, representative users, acceptance criteria, and the decision the pilot should enable. I validate access, data, and deployment constraints immediately, then build a thin end-to-end slice. I defer secondary features and keep limitations explicit while preserving controls appropriate to the data and actions involved.
+
+I reserve time for real user feedback, failure handling, deployment, and a basic operational handoff. Mocks can accelerate isolated development but do not validate the integration they replace. At the end, I compare evidence with the pilot criteria and state what must change before broader production use rather than treating an attractive demo as proof of readiness.
+
+#### 100. What does “done” mean for a full-stack feature?
+
+Tags: #DefinitionOfDone #CompanyUnverified #AmazonRelevant
+
+Done means the agreed user workflow meets its acceptance criteria across the relevant layers and can be delivered and supported in its intended environment. Depending on risk and scope, that includes access control, data correctness, error handling, appropriate tests, performance validation, deployment, monitoring, and documentation.
+
+I verify the outcome with users and confirm operational ownership and known limitations. For a pilot, the completion standard may be narrower than a broad production release, but that distinction must be explicit. A merged change or successful build is evidence of progress; successful, sustainable customer use is the broader delivery goal.
+
+## Practice and review checklist
+
+Practice ten questions at a time. Start with a direct answer, then add a concrete example, a tradeoff, a failure path, and verification. For behavioral follow-ups, use truthful examples and distinguish your contribution from the team's work.
+
+For a practical exercise, check:
+
+1. Can the intended user complete the workflow with keyboard-accessible controls and clear feedback?
+2. Are validation, authorization, and tenant boundaries enforced server-side?
+3. Can stale responses, duplicate requests, or concurrent edits corrupt the displayed or stored result?
+4. Are database and external side effects coordinated or reconciled deliberately?
+5. Are failures visible and recoverable without exposing secrets or sensitive customer data?
+6. Does the deployment work in the target environment with compatible application and schema versions?
+7. Do verification and monitoring measure the user outcome as well as individual component health?
+8. Is there an owner for support, access, dependency updates, and recovery?
+
+Continue with [system design](../03-system-design/README.md), [JavaScript and TypeScript](../06-javascript-typescript/README.md), [React frontend](../07-react-frontend/README.md), [backend APIs](../08-backend-apis/README.md), [databases](../09-databases/README.md), and [customer deployment](../17-customer-deployment/README.md).
